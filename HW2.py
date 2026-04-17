@@ -105,6 +105,8 @@ for col in ["CLERK", "QUEUE", "SITE", "SHIFT"]:
     if col in df.columns:
         df[col] = df[col].str.title()
 
+# Cap TRAINING_SCORE to realistic range (0-100)
+df["TRAINING_SCORE"] = df["TRAINING_SCORE"].apply(lambda x: x if x <= 100 else None)
 
 # Remove duplicates and bad rows
 df = df.drop_duplicates()
@@ -115,3 +117,86 @@ df = df.dropna()
 print(f"\nShape: {df.shape}")
 print(f"\nMissing values:\n{df.isnull().sum()}")
 print(f"\nTreatment counts:\n{df['TREATMENT'].value_counts()}")
+
+
+# STAGE 3: ANALYZE
+
+# Split into treatment and control groups
+treatment = df[df["TREATMENT"] == 1.0]
+control = df[df["TREATMENT"] == 0.0]
+
+# Balance Test
+# Check if randomization created balanced groups by comparing baseline characteristics
+balance_cols = ["YEARS_EXPERIENCE", "BASELINE_TASKS_PER_HOUR", "BASELINE_ERROR_RATE", "TRAINING_SCORE"]
+
+print("=" * 55)
+print("BALANCE TEST - Baseline Characteristics by Group")
+print("=" * 55)
+print(f"{'Characteristic':<28} {'Treatment':>10} {'Control':>10}")
+print("-" * 55)
+for col in balance_cols:
+    t_mean = treatment[col].mean()
+    c_mean = control[col].mean()
+    print(f"{col:<28} {t_mean:>10.2f} {c_mean:>10.2f}")
+print("=" * 55)
+print(f"{'Group Size':<28} {len(treatment):>10} {len(control):>10}")
+
+from scipy import stats
+
+# T-tests
+print("\n")
+print("=" * 65)
+print("IGNORABILITY TEST - T-Tests on Baseline Characteristics")
+print("=" * 65)
+print(f"{'Characteristic':<28} {'T-Stat':>10} {'P-Value':>10} {'Balanced?':>10}")
+print("-" * 65)
+
+for col in balance_cols:
+    t_stat, p_value = stats.ttest_ind(treatment[col], control[col])
+    balanced = "Yes" if p_value > 0.05 else "No"
+    print(f"{col:<28} {t_stat:>10.3f} {p_value:>10.3f} {balanced:>10}")
+
+print("=" * 65)
+print("* p > 0.05 means no significant difference = groups are balanced")
+
+#SUTVA Justification
+print("\n")
+print("=" * 65)
+print("SUTVA - Stable Unit Treatment Value Assumption")
+print("=" * 65)
+print("""
+Justification for no spillover effects:
+- Each clerk works independently on their own computer and AI tool access, so one clerk's use of AI does not affect another's performance.
+- Treatment and control clerks pull from different queues, minimizing any interaction or influence between them.
+- Clerks do not share information about their tasks or performance during the audit week, reducing the chance of behavior changes based on others' conditions.
+- AI assignment was random so there is no way a control clerk would have access to AI tools.
+""")
+
+#ATE Estimation
+print("=" * 55)
+print("ATE ESTIMATION - Average Treatment Effect")
+print("=" * 55)
+
+# ATE on Productivity (TASKS_COMPLETED)
+avg_tasks_treatment = treatment["TASKS_COMPLETED"].mean()
+avg_tasks_control = control["TASKS_COMPLETED"].mean()
+ate_tasks = avg_tasks_treatment - avg_tasks_control
+
+# ATE on Quality (ERROR_RATE)
+avg_error_treatment = treatment["ERROR_RATE"].mean()
+avg_error_control = control["ERROR_RATE"].mean()
+ate_error = avg_error_treatment - avg_error_control
+
+# Print 
+print(f"\nPRODUCTIVITY (Tasks Completed)")
+print(f"  Treatment group avg:  {avg_tasks_treatment:.2f} tasks")
+print(f"  Control group avg:    {avg_tasks_control:.2f} tasks")
+print(f"  ATE:                  {ate_tasks:+.2f} tasks")
+
+print(f"\nQUALITY (Error Rate)")
+print(f"  Treatment group avg:  {avg_error_treatment:.2f}%")
+print(f"  Control group avg:    {avg_error_control:.2f}%")
+print(f"  ATE:                  {ate_error:+.2f}%")
+print("=" * 55)
+print("* Positive ATE on tasks = AI increased productivity")
+print("* Negative ATE on errors = AI improved quality")
