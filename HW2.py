@@ -8,3 +8,110 @@ soup = BeautifulSoup(response.text, "html.parser")
 
 print(soup.prettify()[:3000])
 
+
+# STAGE 2: CLEAN
+
+import re
+
+# Grab the table and all its rows
+table = soup.find("table", class_="operations-table")
+rows = table.find_all("tr")
+
+# First row is the header
+headers = [td.get_text(strip=True) for td in rows[0].find_all("td")]
+
+# Loop through rows
+data = []
+for row in rows[1:]:
+    cols = row.find_all("td")
+    if len(cols) == 0:
+        continue
+    row_data = []
+    for i, col in enumerate(cols):
+        if i == 0:  # CLERK - grab just the name from <strong>
+            strong = col.find("strong")
+            row_data.append(strong.get_text(strip=True) if strong else col.get_text(strip=True))
+        elif i in [1, 2]:  # CLERK_ID, QUEUE - grab text from <span>
+            span = col.find("span")
+            row_data.append(span.get_text(strip=True) if span else col.get_text(strip=True))
+        else:
+            row_data.append(col.get_text(strip=True))
+    data.append(row_data)
+
+# Put into DataFrame
+df = pd.DataFrame(data, columns=headers)
+
+# Fix treatment column
+
+treatment_keywords = ["AI Extract", "Group A", "AI", "Treatment", "AI Tool", "Assist-On", "Prefill Enabled"]
+control_keywords = ["Manual Entry", "Control", "Group B", "Manual", "No AI", "Typing Only"]
+
+def map_treatment(value):
+    if value == "None" or value is None:
+        return None
+    for keyword in treatment_keywords:
+        if keyword.lower() in value.lower():
+            return 1
+    for keyword in control_keywords:
+        if keyword.lower() in value.lower():
+            return 0
+    return None
+
+df["TREATMENT"] = df["TREATMENT"].apply(map_treatment)
+
+# Fix columns
+def extract_number(value):
+    cleaned = re.sub(r"[^\d.]", "", str(value))
+    try:
+        return float(cleaned)
+    except:
+        return None
+
+numeric_cols = [
+    "YEARS_EXPERIENCE", "BASELINE_TASKS_PER_HOUR",
+    "BASELINE_ERROR_RATE", "TRAINING_SCORE",
+    "TASKS_COMPLETED", "ERROR_RATE"
+]
+for col in numeric_cols:
+    df[col] = df[col].apply(extract_number)
+
+# Fix timestamps
+def parse_timestamp(val):
+    formats = [
+        "%b %d, %Y %H:%M",       # Feb 18, 2026 07:56
+        "%d-%b-%Y %I:%M %p",     # 21-Feb-2026 08:19 AM
+        "%Y-%m-%d %H:%M",        # 2026-02-21 08:11
+        "%m/%d/%Y %I:%M %p",     # 02/21/2026 07:55 AM
+        "%Y-%m-%dT%H:%M",        # 2026-02-21T08:11
+        "%m/%d/%Y %H:%M",        # 02/21/2026 07:55
+        "%d-%b-%Y %H:%M",        # 21-Feb-2026 08:19
+    ]
+    for fmt in formats:
+        try:
+            return pd.to_datetime(val, format=fmt)
+        except:
+            continue
+    return pd.NaT
+
+df["SHIFT_START"] = df["SHIFT_START"].apply(parse_timestamp)
+df["SHIFT_END"] = df["SHIFT_END"].apply(parse_timestamp)
+df["SHIFT_DURATION_HRS"] = (df["SHIFT_END"] - df["SHIFT_START"]).dt.total_seconds() / 3600
+
+# Clean
+for col in df.select_dtypes(include="object").columns:
+    df[col] = df[col].str.strip()
+
+for col in ["CLERK", "QUEUE", "SITE", "SHIFT"]:
+    if col in df.columns:
+        df[col] = df[col].str.title()
+
+
+# Remove duplicates and bad rows
+df = df.drop_duplicates()
+df = df[df["SHIFT_DURATION_HRS"] > 0]
+df = df.dropna()
+
+# Print
+print(f"\nShape: {df.shape}")
+print(f"\nMissing values:\n{df.isnull().sum()}")
+print(f"\nTreatment counts:\n{df['TREATMENT'].value_counts()}")
